@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bird-reddit"
+version = "2.0.0"
+description = "Reddit CLI tool for searching, reading, and replying"
+requires-python = ">=3.10"
+dependencies = [
+    "curl_cffi>=0.14",
+    "python-dotenv>=1.0",
+    "click>=8.0",
+]
+
+[project.scripts]
+reddit = "bird_reddit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
