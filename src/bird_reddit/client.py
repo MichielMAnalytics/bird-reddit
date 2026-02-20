@@ -79,19 +79,23 @@ class RedditClient:
             self.device_id = str(uuid.uuid4())
 
         # 2. Collect browser cookies from reddit.com homepage
+        #    This simulates a real user landing on reddit for the first time
         try:
             collect_browser_cookies()
         except Exception:
             pass
 
-        # 3. Build cookie header
+        # 3. Build cookie header with collected cookies + auth
         self.cookie_header = build_cookie_header(self.reddit_session)
 
         # 4. Extract csrf_token and loid from cookie jar
         self.csrf_token = get_cookie("csrf_token") or ""
         self.loid = get_cookie("loid") or ""
 
-        # 5. Fetch modhash from /api/me.json
+        # 5. Warm-up: small delay to mimic real browsing cadence
+        time.sleep(random.uniform(0.5, 1.5))
+
+        # 6. Fetch modhash + user info from /api/me.json (authenticated)
         try:
             data = self._raw_get("/api/me.json")
             if isinstance(data, dict) and "data" in data:
@@ -101,9 +105,16 @@ class RedditClient:
         except Exception:
             self.modhash = ""
 
-        # 6. Update csrf_token/loid if /api/me.json set new cookies
+        # 7. Update csrf_token/loid from any new cookies set by /api/me
         self.csrf_token = get_cookie("csrf_token") or self.csrf_token
         self.loid = get_cookie("loid") or self.loid
+
+        # 8. Warm-up: browse a popular page (mimics real user before interacting)
+        try:
+            time.sleep(random.uniform(0.8, 2.0))
+            self._raw_get("/r/popular/hot.json?limit=2&raw_json=1")
+        except Exception:
+            pass
 
         self._initialized = True
 
@@ -200,6 +211,12 @@ class RedditClient:
         update_jar_from_response(resp)
         self.cookie_header = build_cookie_header(self.reddit_session)
         self._rate.update(resp.headers)
+        if resp.status_code == 403:
+            raise PermissionError(
+                "403 Forbidden — Reddit blocked this action. "
+                "Your account may need verification (check reddit.com in browser for CAPTCHA/email prompts), "
+                "or the reddit_session cookie may be expired."
+            )
         resp.raise_for_status()
         return resp.json()
 
