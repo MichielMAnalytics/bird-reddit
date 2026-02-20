@@ -109,19 +109,23 @@ def reply(ctx, thing_id, text):
             print_error(f"Reddit error: {err}")
         sys.exit(1)
 
-    # Extract comment data — Reddit nests it as things[0].data or things[0]
+    # Extract comment data from things[0].data
     comment_data = {}
     if things:
         t = things[0]
         comment_data = t.get("data", t) if isinstance(t, dict) else {}
 
     comment_id = comment_data.get("id", "").removeprefix("t1_")
-    sub = comment_data.get("subreddit", "")
-    link_id = comment_data.get("link_id", "").removeprefix("t3_")
-    permalink = comment_data.get("permalink", "")
 
-    if not permalink and sub and link_id and comment_id:
-        permalink = f"/r/{sub}/comments/{link_id}/_/{comment_id}/"
+    # Try permalink from structured fields first, then parse from HTML content
+    permalink = comment_data.get("permalink", "")
+    if not permalink:
+        # Reddit embeds data-permalink in the HTML content blob
+        import re
+        content = comment_data.get("content", "")
+        m = re.search(r'data-permalink="([^"]+)"', content)
+        if m:
+            permalink = m.group(1)
 
     url = f"https://reddit.com{permalink}" if permalink else ""
 
