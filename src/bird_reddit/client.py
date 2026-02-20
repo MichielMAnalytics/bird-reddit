@@ -4,13 +4,14 @@ import random
 import sys
 import time
 
-from curl_cffi.requests import Session, Response
+from curl_cffi.requests import Session
 
 from bird_reddit.session_store import get_device_id
 from bird_reddit.cookie_jar import (
     collect_browser_cookies,
     build_cookie_header,
     update_jar_from_response,
+    get_cookie,
 )
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -58,6 +59,8 @@ class RedditClient:
         self.timeout = timeout
         self.device_id = None
         self.modhash = None
+        self.csrf_token = None
+        self.loid = None
         self.cookie_header = None
         self._initialized = False
         self._rate = RateLimitState()
@@ -75,7 +78,7 @@ class RedditClient:
             import uuid
             self.device_id = str(uuid.uuid4())
 
-        # 2. Collect browser cookies
+        # 2. Collect browser cookies from reddit.com homepage
         try:
             collect_browser_cookies()
         except Exception:
@@ -84,7 +87,11 @@ class RedditClient:
         # 3. Build cookie header
         self.cookie_header = build_cookie_header(self.reddit_session)
 
-        # 4. Fetch modhash from /api/me.json
+        # 4. Extract csrf_token and loid from cookie jar
+        self.csrf_token = get_cookie("csrf_token") or ""
+        self.loid = get_cookie("loid") or ""
+
+        # 5. Fetch modhash from /api/me.json
         try:
             data = self._raw_get("/api/me.json")
             if isinstance(data, dict) and "data" in data:
@@ -94,15 +101,20 @@ class RedditClient:
         except Exception:
             self.modhash = ""
 
+        # 6. Update csrf_token/loid if /api/me.json set new cookies
+        self.csrf_token = get_cookie("csrf_token") or self.csrf_token
+        self.loid = get_cookie("loid") or self.loid
+
         self._initialized = True
 
-    def _build_headers(self, is_post=False):
+    def _build_headers(self, is_post=False, referer=None):
         headers = {
-            "accept": "application/json, text/html,*/*;q=0.9",
+            "accept": "application/json",
             "accept-language": "en-US,en;q=0.9",
+            "dnt": "1",
             "user-agent": UA,
             "origin": "https://www.reddit.com",
-            "referer": "https://www.reddit.com/",
+            "referer": referer or "https://www.reddit.com/",
             "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": '"macOS"',
@@ -111,6 +123,11 @@ class RedditClient:
             "sec-fetch-site": "same-origin",
             "cookie": self.cookie_header or f"reddit_session={self.reddit_session}",
         }
+        # Reddit-specific identity headers (like Twitter's x-csrf-token / x-twitter-client-*)
+        if self.csrf_token:
+            headers["x-csrf-token"] = self.csrf_token
+        if self.loid:
+            headers["x-reddit-loid"] = self.loid
         if is_post:
             headers["content-type"] = "application/x-www-form-urlencoded"
             if self.modhash:
@@ -123,7 +140,16 @@ class RedditClient:
         headers = {
             "accept": "application/json",
             "accept-language": "en-US,en;q=0.9",
+            "dnt": "1",
             "user-agent": UA,
+            "origin": "https://www.reddit.com",
+            "referer": "https://www.reddit.com/",
+            "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
             "cookie": self.cookie_header or f"reddit_session={self.reddit_session}",
         }
         resp = self._session.get(url, headers=headers, timeout=self.timeout)
@@ -132,7 +158,7 @@ class RedditClient:
         resp.raise_for_status()
         return resp.json()
 
-    def _get(self, path, params=None):
+    def _get(self, path, params=None, referer=None):
         """GET with init check and rate limit awareness."""
         self._ensure_init()
         if self._rate.should_pause():
@@ -142,7 +168,7 @@ class RedditClient:
 
         url = f"{BASE}{path}"
         resp = self._session.get(
-            url, headers=self._build_headers(), params=params, timeout=self.timeout
+            url, headers=self._build_headers(referer=referer), params=params, timeout=self.timeout
         )
         update_jar_from_response(resp)
         self.cookie_header = build_cookie_header(self.reddit_session)
@@ -150,7 +176,7 @@ class RedditClient:
         resp.raise_for_status()
         return resp.json()
 
-    def _post(self, path, data=None):
+    def _post(self, path, data=None, referer=None):
         """POST with init, modhash injection, jitter, and rate limit."""
         self._ensure_init()
         if self._rate.should_pause():
@@ -159,7 +185,7 @@ class RedditClient:
             time.sleep(wait)
 
         if not self.no_jitter:
-            jitter = random.uniform(10, 30)
+            jitter = random.uniform(2, 5)
             time.sleep(jitter)
 
         if data is None:
@@ -169,7 +195,7 @@ class RedditClient:
 
         url = f"{BASE}{path}"
         resp = self._session.post(
-            url, headers=self._build_headers(is_post=True), data=data, timeout=self.timeout
+            url, headers=self._build_headers(is_post=True, referer=referer), data=data, timeout=self.timeout
         )
         update_jar_from_response(resp)
         self.cookie_header = build_cookie_header(self.reddit_session)
@@ -189,13 +215,14 @@ class RedditClient:
             "restrict_sr": "on" if subreddit else "off",
             "type": "link",
             "raw_json": 1,
-        })
+        }, referer=f"https://www.reddit.com/r/{sub}/search/?q={query}")
 
     def subreddit_posts(self, name, count=25, sort="hot", time_filter="week"):
         params = {"limit": count, "raw_json": 1}
         if sort == "top":
             params["t"] = time_filter
-        return self._get(f"/r/{name}/{sort}.json", params=params)
+        return self._get(f"/r/{name}/{sort}.json", params=params,
+                         referer=f"https://www.reddit.com/r/{name}/")
 
     def read_post(self, post_id, comment_count=20):
         # Strip prefix if provided
@@ -204,7 +231,7 @@ class RedditClient:
             "limit": comment_count,
             "sort": "confidence",
             "raw_json": 1,
-        })
+        }, referer=f"https://www.reddit.com/comments/{post_id}/")
         # Reddit returns [post_listing, comment_listing]
         post = None
         comments = []
@@ -225,11 +252,14 @@ class RedditClient:
         # Ensure proper prefix
         if not thing_id.startswith(("t1_", "t3_")):
             thing_id = f"t3_{thing_id}"
+        # Context-aware referer: point to the post/comment being replied to
+        raw_id = thing_id.removeprefix("t3_").removeprefix("t1_")
+        referer = f"https://www.reddit.com/comments/{raw_id}/"
         return self._post("/api/comment", data={
             "thing_id": thing_id,
             "text": text,
             "api_type": "json",
-        })
+        }, referer=referer)
 
     def submit_post(self, subreddit, title, body=None, url=None):
         data = {
@@ -244,16 +274,18 @@ class RedditClient:
         else:
             data["kind"] = "self"
             data["text"] = body or ""
-        return self._post("/api/submit", data=data)
+        return self._post("/api/submit", data=data,
+                          referer=f"https://www.reddit.com/r/{subreddit}/submit/")
 
     def me(self):
         return self._get("/api/me.json")
 
     def user_about(self, username):
-        return self._get(f"/user/{username}/about.json")
+        return self._get(f"/user/{username}/about.json",
+                         referer=f"https://www.reddit.com/user/{username}/")
 
     def mentions(self, count=25):
         return self._get("/message/mentions.json", params={
             "limit": count,
             "raw_json": 1,
-        })
+        }, referer="https://www.reddit.com/message/mentions/")

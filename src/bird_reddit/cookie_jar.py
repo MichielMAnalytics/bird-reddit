@@ -12,8 +12,6 @@ MAX_AGE_S = 24 * 60 * 60  # 24 hours
 _jar = None
 _collected_at = 0
 
-UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-
 
 def _read_jar():
     try:
@@ -68,8 +66,9 @@ def collect_browser_cookies():
         resp = s.get(
             "https://www.reddit.com/",
             headers={
-                "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
                 "accept-language": "en-US,en;q=0.9",
+                "dnt": "1",
                 "sec-fetch-dest": "document",
                 "sec-fetch-mode": "navigate",
                 "sec-fetch-site": "none",
@@ -89,6 +88,13 @@ def collect_browser_cookies():
         if _jar is None:
             _jar = {}
         _collected_at = time.time()
+
+
+def get_cookie(name):
+    """Get a specific cookie value from the jar."""
+    if _jar:
+        return _jar.get(name)
+    return None
 
 
 def build_cookie_header(reddit_session):
