@@ -109,23 +109,33 @@ def reply(ctx, thing_id, text):
             print_error(f"Reddit error: {err}")
         sys.exit(1)
 
-    if ctx.obj["json"]:
-        if things:
-            comment_data = things[0].get("data", {})
-            print_json({
-                "status": "ok",
-                "comment_id": comment_data.get("id", ""),
-                "thing_id": thing_id,
-                "url": f"https://reddit.com{comment_data.get('permalink', '')}",
-            })
-        else:
-            print_json({"status": "ok", "thing_id": thing_id})
+    if things:
+        comment_data = things[0].get("data", {})
+        comment_id = comment_data.get("id", "")
+        permalink = comment_data.get("permalink", "")
+        if not permalink:
+            # Build URL from available fields: subreddit + link_id + comment_id
+            sub = comment_data.get("subreddit", "")
+            link_id = comment_data.get("link_id", "").removeprefix("t3_")
+            if sub and link_id and comment_id:
+                permalink = f"/r/{sub}/comments/{link_id}/_/{comment_id}/"
+        url = f"https://reddit.com{permalink}" if permalink else ""
     else:
-        if things:
-            comment_data = things[0].get("data", {})
-            print_success(f"Reply posted: https://reddit.com{comment_data.get('permalink', '')}")
+        comment_id = ""
+        url = ""
+
+    if ctx.obj["json"]:
+        print_json({
+            "status": "ok",
+            "comment_id": comment_id,
+            "thing_id": thing_id,
+            "url": url,
+        })
+    else:
+        if url:
+            print_success(f"Reply posted: {url}")
         else:
-            print_success("Reply posted")
+            print_success(f"Reply posted (comment id: {comment_id or 'unknown'})")
 
 
 # ── post ────────────────────────────────────────────────────────────────────
